@@ -1,11 +1,12 @@
 AVPROGS-$(CONFIG_FFMPEG)   += ffmpeg
 AVPROGS-$(CONFIG_FFPLAY)   += ffplay
 AVPROGS-$(CONFIG_FFPROBE)  += ffprobe
+AVPROGS-$(CONFIG_FFPROBE)  += ffcheck
 
 AVPROGS     := $(AVPROGS-yes:%=%$(PROGSSUF)$(EXESUF))
 PROGS       += $(AVPROGS)
 
-AVBASENAMES  = ffmpeg ffplay ffprobe
+AVBASENAMES  = ffmpeg ffplay ffprobe ffcheck
 ALLAVPROGS   = $(AVBASENAMES:%=%$(PROGSSUF)$(EXESUF))
 ALLAVPROGS_G = $(AVBASENAMES:%=%$(PROGSSUF)_g$(EXESUF))
 
@@ -31,7 +32,7 @@ $(foreach P,$(AVPROGS-yes),$(eval $(call DOFFTOOL,$(P))))
 
 all: $(AVPROGS)
 
-fftools/ffprobe.o fftools/cmdutils.o: libavutil/ffversion.h | fftools
+fftools/ffcheck.o fftools/ffprobe.o fftools/cmdutils.o: libavutil/ffversion.h | fftools
 OBJDIRS += fftools
 
 ifdef AVPROGS
