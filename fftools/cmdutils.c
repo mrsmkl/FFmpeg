@@ -217,6 +217,7 @@ void show_help_children(const AVClass *class, int flags)
 
 static const OptionDef *find_option(const OptionDef *po, const char *name)
 {
+    
     const char *p = strchr(name, ':');
     int len = p ? p - name : strlen(name);
 
@@ -333,7 +334,9 @@ static int write_option(void *optctx, const OptionDef *po, const char *opt,
     } else if (po->flags & OPT_DOUBLE) {
         *(double *)dst = parse_number_or_die(opt, arg, OPT_DOUBLE, -INFINITY, INFINITY);
     } else if (po->u.func_arg) {
+        fprintf(stderr, "Function call %x\n", po->u.func_arg);
         int ret = po->u.func_arg(optctx, opt, arg);
+        fprintf(stderr, "This was the error?\n");
         if (ret < 0) {
             av_log(NULL, AV_LOG_ERROR,
                    "Failed to set value '%s' for option '%s': %s\n",
@@ -352,8 +355,11 @@ int parse_option(void *optctx, const char *opt, const char *arg,
 {
     const OptionDef *po;
     int ret;
+    
+    fprintf(stderr, "Parsing option %s\n", opt);
 
     po = find_option(options, opt);
+    fprintf(stderr, "Hmm 1 %s\n", opt);
     if (!po->name && opt[0] == 'n' && opt[1] == 'o') {
         /* handle 'no' bool option */
         po = find_option(options, opt + 2);
@@ -362,6 +368,7 @@ int parse_option(void *optctx, const char *opt, const char *arg,
     } else if (po->flags & OPT_BOOL)
         arg = "1";
 
+    fprintf(stderr, "Hmm %s\n", opt);
     if (!po->name)
         po = find_option(options, "default");
     if (!po->name) {
@@ -372,8 +379,11 @@ int parse_option(void *optctx, const char *opt, const char *arg,
         av_log(NULL, AV_LOG_ERROR, "Missing argument for option '%s'\n", opt);
         return AVERROR(EINVAL);
     }
+    
+    fprintf(stderr, "Writing option %s\n", opt);
 
     ret = write_option(optctx, po, opt, arg);
+    fprintf(stderr, "Wrote option %s\n", opt);
     if (ret < 0)
         return ret;
 

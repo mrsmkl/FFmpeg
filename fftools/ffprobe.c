@@ -2326,6 +2326,120 @@ static void log_read_interval(const ReadInterval *interval, void *log_ctx, int l
     av_log(log_ctx, log_level, "\n");
 }
 
+static int read_interval_packet_sizes(InputFile *ifile,
+                                 const ReadInterval *interval, int64_t *cur_ts)
+{
+    AVFormatContext *fmt_ctx = ifile->fmt_ctx;
+    AVPacket pkt;
+    AVFrame *frame = NULL;
+    int ret = 0, i = 0, frame_count = 0;
+    int total_size = 0;
+    int64_t start = -INT64_MAX, end = interval->end;
+    int has_start = 0, has_end = interval->has_end && !interval->end_is_offset;
+
+    av_init_packet(&pkt);
+
+    av_log(NULL, AV_LOG_VERBOSE, "Processing read interval ");
+    log_read_interval(interval, NULL, AV_LOG_VERBOSE);
+
+    if (interval->has_start) {
+        int64_t target;
+        if (interval->start_is_offset) {
+            if (*cur_ts == AV_NOPTS_VALUE) {
+                av_log(NULL, AV_LOG_ERROR,
+                       "Could not seek to relative position since current "
+                       "timestamp is not defined\n");
+                ret = AVERROR(EINVAL);
+                goto end;
+            }
+            target = *cur_ts + interval->start;
+        } else {
+            target = interval->start;
+        }
+
+        av_log(NULL, AV_LOG_VERBOSE, "Seeking to read interval start point %s\n",
+               av_ts2timestr(target, &AV_TIME_BASE_Q));
+        if ((ret = avformat_seek_file(fmt_ctx, -1, -INT64_MAX, target, INT64_MAX, 0)) < 0) {
+            av_log(NULL, AV_LOG_ERROR, "Could not seek to position %"PRId64": %s\n",
+                   interval->start, av_err2str(ret));
+            goto end;
+        }
+    }
+
+    frame = av_frame_alloc();
+    if (!frame) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    while (!av_read_frame(fmt_ctx, &pkt)) {
+        if (ifile->nb_streams > nb_streams) {
+            REALLOCZ_ARRAY_STREAM(nb_streams_frames,  nb_streams, fmt_ctx->nb_streams);
+            REALLOCZ_ARRAY_STREAM(nb_streams_packets, nb_streams, fmt_ctx->nb_streams);
+            REALLOCZ_ARRAY_STREAM(selected_streams,   nb_streams, fmt_ctx->nb_streams);
+            nb_streams = ifile->nb_streams;
+        }
+        if (selected_streams[pkt.stream_index]) {
+            AVRational tb = ifile->streams[pkt.stream_index].st->time_base;
+
+            if (pkt.pts != AV_NOPTS_VALUE)
+                *cur_ts = av_rescale_q(pkt.pts, tb, AV_TIME_BASE_Q);
+
+            if (!has_start && *cur_ts != AV_NOPTS_VALUE) {
+                start = *cur_ts;
+                has_start = 1;
+            }
+
+            if (has_start && !has_end && interval->end_is_offset) {
+                end = start + interval->end;
+                has_end = 1;
+            }
+
+            if (interval->end_is_offset && interval->duration_frames) {
+                if (frame_count >= interval->end)
+                    break;
+            } else if (has_end && *cur_ts != AV_NOPTS_VALUE && *cur_ts >= end) {
+                break;
+            }
+
+            frame_count++;
+            // show_packet(w, ifile, &pkt, 
+            
+            total_size += pkt.size;
+            fprintf(stderr, "Size %d\n", total_size);
+            
+            i++;
+            // show_packet_size(ifile, &pkt, i++);
+            nb_streams_packets[pkt.stream_index]++;
+            /*
+            if (do_read_frames) {
+                int packet_new = 1;
+                while (process_frame(w, ifile, frame, &pkt, &packet_new) > 0);
+            }*/
+        }
+        av_packet_unref(&pkt);
+    }
+    av_init_packet(&pkt);
+    pkt.data = NULL;
+    pkt.size = 0;
+    //Flush remaining frames that are cached in the decoder
+    /*
+    for (i = 0; i < fmt_ctx->nb_streams; i++) {
+        pkt.stream_index = i;
+        if (do_read_frames)
+            while (process_frame(w, ifile, frame, &pkt, &(int){1}) > 0);
+    }*/
+
+end:
+    av_frame_free(&frame);
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_ERROR, "Could not read packets in interval ");
+        log_read_interval(interval, NULL, AV_LOG_ERROR);
+    }
+    return total_size;
+}
+
+
+
 static int read_interval_packets(WriterContext *w, InputFile *ifile,
                                  const ReadInterval *interval, int64_t *cur_ts)
 {
@@ -2448,6 +2562,44 @@ static int read_packets(WriterContext *w, InputFile *ifile)
                 break;
         }
     }
+
+    return ret;
+}
+
+static int read_packet_sizes(InputFile *ifile)
+{
+    AVFormatContext *fmt_ctx = ifile->fmt_ctx;
+    int i, ret = 0;
+    int64_t cur_ts = fmt_ctx->start_time;
+    
+    int total_size = 0;
+
+    if (read_intervals_nb == 0) {
+        ReadInterval interval = (ReadInterval) { .has_start = 0, .has_end = 0 };
+        ret = read_interval_packet_sizes(ifile, &interval, &cur_ts);
+        total_size += ret;
+    } else {
+        for (i = 0; i < read_intervals_nb; i++) {
+            ret = read_interval_packet_sizes(ifile, &read_intervals[i], &cur_ts);
+            if (ret < 0)
+                break;
+            total_size += ret;
+        }
+    }
+    
+    uint8_t arr[32];
+    for (i = 0; i < 32; i++) arr[i] = 0;
+    for (i = 0; i < 4; i++) {
+        arr[31-i] = total_size&0xff;
+        total_size = total_size >> 8;
+    }
+    FILE *f = fopen("output.data", "wb");
+    if (!f) {
+        fprintf(stderr, "Cannot open file output.data for writing\n");
+        exit(-1);
+    }
+    fwrite(arr, 1, 32, f);
+    fclose(f);
 
     return ret;
 }
@@ -2953,6 +3105,53 @@ static void close_input_file(InputFile *ifile)
     avformat_close_input(&ifile->fmt_ctx);
 }
 
+static int packet_sizes(const char *filename) {
+    InputFile ifile = { 0 };
+    int ret, i;
+    int section_id;
+
+    ret = open_input_file(&ifile, filename);
+    if (ret < 0)
+        goto end;
+    
+    nb_streams = ifile.fmt_ctx->nb_streams;
+    REALLOCZ_ARRAY_STREAM(nb_streams_frames,0,ifile.fmt_ctx->nb_streams);
+    REALLOCZ_ARRAY_STREAM(nb_streams_packets,0,ifile.fmt_ctx->nb_streams);
+    REALLOCZ_ARRAY_STREAM(selected_streams,0,ifile.fmt_ctx->nb_streams);
+    
+    char *stream_specifier = "v";
+    
+    for (i = 0; i < ifile.fmt_ctx->nb_streams; i++) {
+        if (stream_specifier) {
+            ret = avformat_match_stream_specifier(ifile.fmt_ctx,
+                                                  ifile.fmt_ctx->streams[i],
+                                                  stream_specifier);
+            if (ret < 0) goto end;
+            else
+                selected_streams[i] = ret;
+            ret = 0;
+        } else {
+            selected_streams[i] = 1;
+        }
+        if (!selected_streams[i])
+            ifile.fmt_ctx->streams[i]->discard = AVDISCARD_ALL;
+    }
+
+    section_id = SECTION_ID_PACKETS;
+    // writer_print_section_header(wctx, section_id);
+    // ret = read_packets(wctx, &ifile);
+    ret = read_packet_sizes(&ifile);
+    
+    end:
+    if (ifile.fmt_ctx)
+        close_input_file(&ifile);
+    av_freep(&nb_streams_frames);
+    av_freep(&nb_streams_packets);
+    av_freep(&selected_streams);
+
+    return ret;
+}
+    
 static int probe_file(WriterContext *wctx, const char *filename)
 {
     InputFile ifile = { 0 };
@@ -2973,6 +3172,7 @@ static int probe_file(WriterContext *wctx, const char *filename)
     REALLOCZ_ARRAY_STREAM(nb_streams_packets,0,ifile.fmt_ctx->nb_streams);
     REALLOCZ_ARRAY_STREAM(selected_streams,0,ifile.fmt_ctx->nb_streams);
 
+    fprintf(stderr, "Stream specifier %s\n", stream_specifier);
     for (i = 0; i < ifile.fmt_ctx->nb_streams; i++) {
         if (stream_specifier) {
             ret = avformat_match_stream_specifier(ifile.fmt_ctx,
@@ -3463,7 +3663,7 @@ static int opt_show_versions(const char *opt, const char *arg)
 }
 
 #define DEFINE_OPT_SHOW_SECTION(section, target_section_id)             \
-    static int opt_show_##section(const char *opt, const char *arg)     \
+    static int opt_show_##section(void *ctx, const char *opt, const char *arg)     \
     {                                                                   \
         mark_section_show_entries(SECTION_ID_##target_section_id, 1, NULL); \
         return 0;                                                       \
@@ -3546,7 +3746,13 @@ static inline int check_section_show_entries(int section_id)
             do_show_##varname = 1;                                      \
     } while (0)
 
-int main(int argc, char **argv)
+int main(int argc, char **argv) {
+    packet_sizes("input.ts");
+    return 0;
+}
+
+
+static int old_main(int argc, char **argv)
 {
     const Writer *w;
     WriterContext *wctx;
@@ -3575,6 +3781,7 @@ int main(int argc, char **argv)
 #endif
 
     show_banner(argc, argv, options);
+    
     parse_options(NULL, argc, argv, options, opt_input_file);
 
     if (do_show_log)
@@ -3612,6 +3819,7 @@ int main(int argc, char **argv)
         goto end;
     }
 
+    fprintf(stderr, "Registering\n");
     writer_register_all();
 
     if (!print_format)

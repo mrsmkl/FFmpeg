@@ -229,6 +229,7 @@ static int file_open(URLContext *h, const char *filename, int flags)
 
     h->is_streamed = !fstat(fd, &st) && S_ISFIFO(st.st_mode);
 
+    fprintf(stderr, "Is streamed %i\n", h->is_streamed);
     /* Buffer writes more than the default 32k to improve throughput especially
      * with networked file systems */
     if (!h->is_streamed && flags & AVIO_FLAG_WRITE)
@@ -245,11 +246,14 @@ static int64_t file_seek(URLContext *h, int64_t pos, int whence)
 
     if (whence == AVSEEK_SIZE) {
         struct stat st;
+        fprintf(stderr, "Seeking\n");
         ret = fstat(c->fd, &st);
         return ret < 0 ? AVERROR(errno) : (S_ISFIFO(st.st_mode) ? 0 : st.st_size);
     }
 
     ret = lseek(c->fd, pos, whence);
+    
+    fprintf(stderr, "L seek %lld\n", ret);
 
     return ret < 0 ? AVERROR(errno) : ret;
 }
